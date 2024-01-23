@@ -1,10 +1,13 @@
+import logging
 from typing import List, Optional, Union
 from athena import AthenaHelper
-from utils import int_check, render_item_list_to_string
+from utils import int_check, render_item_list_to_string, check_execution_state, validation_check
 
 
 class ClipsAnalyzer:
     def __init__(self) -> None:
+        self.athena_client = None
+        self.table_name = None
         self.selected_vehicle_types = None
         self.limit_rows = None
         self.query = None
@@ -45,9 +48,39 @@ class ClipsAnalyzer:
 
         return text.strip().strip(',')
 
+    def get_table_scheme(self) -> dict:
+        query = f"SELECT column_name, data_type FROM INFORMATION_SCHEMA.columns where table_name='{self.table_name}';"
+        execution_id = self.athena_client.exec_query(query)
+        check_execution_state(ca.athena_client.wait_for_execution_completion(execution_id))
+        results = ca.athena_client.get_query_results(execution_id)
+        try:
+            return results['ResultSet']['Rows']
+        except KeyError as e:
+            logging.error(f"Unexpected object was returned while getting results for get_table_scheme, results: {results}")
+            raise KeyError(e)
+
+    def is_scheme_validated(self, expected_schema):
+        existing_schema_rows = self.get_table_scheme()
+        validated = True
+        # ignoring the first row, which are the headers
+        for i in range(1, len(existing_schema_rows)):
+            try:
+                key = existing_schema_rows[i]['Data'][0]['VarCharValue']
+                existing_value = existing_schema_rows[i]['Data'][1]['VarCharValue']
+            except KeyError as e:
+                logging.error(
+                    f"Unexpected object was returned while parsing schema row, row: {existing_schema_rows[i]}")
+                raise KeyError(e)
+            expected_value = expected_schema.get(key)
+            if expected_value and expected_value != existing_value:
+                validated = False
+                logging.warning(f"Found Schema validation error, for name: '{key}' expected type: '{expected_value}',found type: '{existing_value}'")
+
+        return validated
+
+
     def render_query(self) -> None:
         rendered_text_by_intervals = self.render_by_intervals()
-
         vehicle_type_section = ''
         if self.selected_vehicle_types and isinstance(self.selected_vehicle_types, list):
             vehicle_type_section = f"LOWER(vehicle_type) IN ({render_item_list_to_string(self.selected_vehicle_types)})"
@@ -67,7 +100,7 @@ class ClipsAnalyzer:
         query = '''SELECT
         vehicle_type,
         {rendered_text_by_intervals}
-        FROM oren_parqs
+        FROM {table_name}
         {where_statement}
         {vehicle_type_section}
         {and_operator}
@@ -75,6 +108,7 @@ class ClipsAnalyzer:
         GROUP BY vehicle_type
         LIMIT {limit_rows}
         ;'''.format(
+            table_name=self.table_name,
             where_statement=where_statement,
             vehicle_type_section=vehicle_type_section,
             and_operator=and_operator,
@@ -84,20 +118,24 @@ class ClipsAnalyzer:
         )
         self.query = query
 
+    def run_query(self):
+        execution_id = self.athena_client.exec_query(ca.query)
+        check_execution_state(self.athena_client.wait_for_execution_completion(execution_id))
+        return ca.athena_client.get_query_results(execution_id)
+
 
 if __name__ == '__main__':
-    ath = AthenaHelper(database='oren-clips-output', output_location='s3://oren-output-location/')
-    ath.init_client()
     ca = ClipsAnalyzer()
+    ca.athena_client = AthenaHelper(database='oren-clips-output', output_location='s3://oren-output-location/')
+    ca.athena_client.init_client()
+    ca.table_name = 'oren_parqs'
+    validated = ca.is_scheme_validated({'clip_name': 'varchar', 'detection': 'boolean'})
+    validation_check(validated, 'is_scheme_validated')
     ca.set_limit_rows(10)
     ca.set_selected_clips(['PNT1_Det4_210125_152642_0000_s001_v_AllCams_s60_0010'])
     ca.set_selected_vehicle_type(['scooter'])
     ca.render_query()
-    execution_id = ath.exec_query(ca.query)
-    state = ath.wait_for_execution_completion(execution_id)
-    if state != 'SUCCEEDED':
-        raise Exception(f"Could complete the Query Execution, state: {state}")
-    results = ath.get_query_results(execution_id)
+    results = ca.run_query()
     print(results)
 
 # docstring
