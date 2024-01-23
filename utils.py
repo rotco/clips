@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List
 
 
 def int_check(num: int, var_name: str) -> None:
@@ -15,14 +15,14 @@ def validation_check(validated: bool, name: str) -> None:
 def render_item_list_to_string(items: List[str]) -> str:
     if not isinstance(items, list):
         raise ValueError(f"expecting a list object, got: {list}")
-    text = ''
+    text = ""
     for item in items:
         if not isinstance(item, str):
             raise ValueError(f"expecting a string object, got: {item}")
         text += f"'{item.lower()}', "
-    return text.strip(', ')
+    return text.strip(", ")
 
 
 def check_execution_state(state: str) -> bool:
-    if state != 'SUCCEEDED':
-        raise Exception(f"Could not complete the Query Execution, state: {state}")
+    if state != "SUCCEEDED":
+        raise ValueError(f"Could not complete the Query Execution, state: {state}")
